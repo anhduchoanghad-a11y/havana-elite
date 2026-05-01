@@ -75,7 +75,7 @@
                         <a href="#contact" class="text-gray-300 hover:text-gold transition text-sm uppercase tracking-widest font-medium">Liên hệ</a>
                     </nav>
                     <div class="hidden md:flex items-center space-x-6">
-                        <button class="text-gray-300 hover:text-gold transition relative">
+                        <button class="text-gray-300 hover:text-gold transition relative" onclick="showToast('Giỏ hàng sẽ hiển thị các đơn bạn vừa đặt!')">
                             <i class="ph ph-shopping-bag text-2xl"></i>
                             <span id="cart-count" class="absolute -top-1 -right-2 bg-gold text-cigar-dark text-xs font-bold rounded-full h-4 w-4 flex items-center justify-center">0</span>
                         </button>
@@ -201,7 +201,7 @@
                             </thead>
                             <tbody id="admin-table-body" class="divide-y divide-white/5 text-sm">
                                 <tr>
-                                    <td colspan="5" class="px-6 py-10 text-center text-gray-500 italic">Vui lòng đăng nhập admin để xem dữ liệu...</td>
+                                    <td colspan="5" class="px-6 py-10 text-center text-gray-500 italic">Đang tải dữ liệu...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -251,9 +251,10 @@
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cigar-landing';
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'cigar-landing-pro';
 
         let user = null;
+        let cartCountValue = 0;
 
         // --- RULE 3: AUTH BEFORE QUERIES ---
         const initAuth = async () => {
@@ -265,42 +266,41 @@
                 }
             } catch (error) {
                 console.error("Auth error:", error);
+                showToast("Lỗi kết nối hệ thống bảo mật.");
             }
         };
 
-        // Initialize auth immediately
         initAuth();
 
-        // Listen for auth state changes
         onAuthStateChanged(auth, (u) => {
             user = u;
             if (u) {
-                console.log("Đã kết nối hệ thống bảo mật.");
-                // Nếu đang ở trang admin thì setup dashboard
+                console.log("Xác thực người dùng thành công:", u.uid);
+                // Nếu Dashboard đang mở thì setup ngay
                 if (!document.getElementById('admin-panel').classList.contains('hidden')) {
                     setupAdminDashboard();
                 }
             }
         });
 
-        // --- DATA SAVING ---
+        // --- DATA SAVING (FIXED LOGIC) ---
         async function saveLead(data, collectionName) {
             if (!user) {
-                showToast("Vui lòng đợi hệ thống kết nối...");
+                showToast("Đang xác thực hệ thống, vui lòng thử lại sau vài giây...");
                 return false;
             }
             try {
-                // RULE 1: Standard paths
                 const colRef = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
-                await addDoc(colRef, {
+                const docRef = await addDoc(colRef, {
                     ...data,
                     timestamp: serverTimestamp(),
                     userId: user.uid
                 });
+                console.log("Dữ liệu đã lưu với ID:", docRef.id);
                 return true;
             } catch (error) {
-                console.error("Lưu dữ liệu thất bại:", error);
-                showToast("Lỗi phân quyền hệ thống.");
+                console.error("Firebase Save Error:", error);
+                showToast("Lỗi lưu dữ liệu: " + error.message);
                 return false;
             }
         }
@@ -313,36 +313,28 @@
         function setupAdminDashboard() {
             if (!user) return;
 
-            // Cleanup old listeners
+            // Reset old listeners
             if (ordersUnsubscribe) ordersUnsubscribe();
             if (leadsUnsubscribe) leadsUnsubscribe();
 
-            // RULE 1: Public paths
             const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
             const leadsRef = collection(db, 'artifacts', appId, 'public', 'data', 'leads');
 
-            // Success & Error callbacks required for onSnapshot
             ordersUnsubscribe = onSnapshot(ordersRef, (snapshot) => {
                 const data = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id, typeLabel: 'Đơn hàng' }));
-                updateTable(data, 'orders');
-            }, (err) => {
-                console.error("Lỗi tải đơn hàng:", err);
-                showToast("Lỗi phân quyền khi xem đơn hàng.");
-            });
+                combinedData.orders = data;
+                updateTable();
+            }, (err) => console.error("Snapshot error (orders):", err));
 
             leadsUnsubscribe = onSnapshot(leadsRef, (snapshot) => {
                 const data = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id, typeLabel: 'Tư vấn' }));
-                updateTable(data, 'leads');
-            }, (err) => {
-                console.error("Lỗi tải tư vấn:", err);
-            });
+                combinedData.leads = data;
+                updateTable();
+            }, (err) => console.error("Snapshot error (leads):", err));
         }
 
-        function updateTable(data, category) {
-            combinedData[category] = data;
+        function updateTable() {
             const tableBody = document.getElementById('admin-table-body');
-            
-            // RULE 2: Filter/Sort in JS
             const masterList = [...combinedData.orders, ...combinedData.leads]
                 .sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
 
@@ -350,12 +342,12 @@
             document.getElementById('stat-leads').innerText = combinedData.leads.length;
 
             if (masterList.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="5" class="px-6 py-10 text-center text-gray-500 italic">Chưa có dữ liệu nào được ghi nhận.</td></tr>`;
+                tableBody.innerHTML = `<tr><td colspan="5" class="px-6 py-10 text-center text-gray-500 italic">Chưa có khách đăng ký.</td></tr>`;
                 return;
             }
 
             tableBody.innerHTML = masterList.map(item => {
-                const dateStr = item.timestamp ? new Date(item.timestamp.seconds * 1000).toLocaleString('vi-VN') : 'Đang xử lý...';
+                const dateStr = item.timestamp ? new Date(item.timestamp.seconds * 1000).toLocaleString('vi-VN') : 'Mới';
                 const isOrder = item.typeLabel === 'Đơn hàng';
                 return `
                     <tr class="hover:bg-white/[0.02] transition border-b border-white/5">
@@ -368,14 +360,14 @@
                             </span>
                         </td>
                         <td class="px-6 py-4 text-gray-300">
-                            ${isOrder ? `Mua: <span class="text-white">${item.product}</span>` : `<span class="italic">Cần tư vấn</span>`}
+                            ${isOrder ? `Mua: <span class="text-white">${item.product}</span>` : `<span class="italic text-xs">Yêu cầu tư vấn vị</span>`}
                         </td>
                     </tr>
                 `;
             }).join('');
         }
 
-        // --- FORM HANDLERS ---
+        // --- HANDLERS (FIXED CART LOGIC) ---
         document.getElementById('lead-form').onsubmit = async (e) => {
             e.preventDefault();
             const btn = document.getElementById('lead-submit-btn');
@@ -387,7 +379,7 @@
             }, 'leads');
 
             if (success) {
-                showToast("Yêu cầu tư vấn đã được ghi nhận!");
+                showToast("Đã gửi yêu cầu tư vấn thành công!");
                 e.target.reset();
             }
             btn.disabled = false; btn.innerText = "GỬI THÔNG TIN";
@@ -397,7 +389,7 @@
             e.preventDefault();
             const btn = document.getElementById('modal-submit-btn');
             const pName = document.getElementById('modal-product-name').innerText;
-            btn.disabled = true; btn.innerText = "ĐANG XỬ LÝ...";
+            btn.disabled = true; btn.innerText = "ĐANG ĐẶT HÀNG...";
             
             const success = await saveLead({
                 product: pName,
@@ -406,16 +398,17 @@
             }, 'orders');
 
             if (success) {
-                showToast(`Đơn hàng ${pName} đã thành công!`);
+                // Cập nhật số lượng giỏ hàng ngay lập tức
+                cartCountValue++;
+                document.getElementById('cart-count').innerText = cartCountValue;
+                
+                showToast(`Chúc mừng! Đơn hàng ${pName} đã được gửi.`);
                 closeModal();
-                const badge = document.getElementById('cart-count');
-                badge.innerText = parseInt(badge.innerText) + 1;
+                e.target.reset();
             }
             btn.disabled = false; btn.innerText = "ĐẶT MUA";
-            e.target.reset();
         };
 
-        // Export functions to global window
         window.setupAdminDashboard = setupAdminDashboard;
     </script>
 
@@ -445,11 +438,10 @@
                 document.getElementById('admin-auth-modal').classList.add('hidden');
                 document.getElementById('admin-panel').classList.remove('hidden');
                 document.getElementById('landing-page').classList.add('hidden');
-                // Gọi function từ module Firebase
                 if (window.setupAdminDashboard) window.setupAdminDashboard();
-                showToast("Chào mừng Admin!");
+                showToast("Đăng nhập Admin thành công!");
             } else {
-                showToast("Mật khẩu không chính xác.");
+                showToast("Mật khẩu không đúng.");
             }
         }
 
@@ -459,8 +451,8 @@
         }
 
         function refreshData() {
-            showToast("Đang làm mới dữ liệu...");
             if (window.setupAdminDashboard) window.setupAdminDashboard();
+            showToast("Đã làm mới dữ liệu.");
         }
 
         async function getAIRecommendation() {
@@ -469,8 +461,8 @@
             const btn = document.getElementById('ai-btn');
             if(!input.trim()) return;
 
-            btn.disabled = true; btn.innerText = "Đang phân tích...";
-            resDiv.classList.remove('hidden'); resDiv.innerText = "Sommelier đang suy nghĩ...";
+            btn.disabled = true; btn.innerText = "Đang tư vấn...";
+            resDiv.classList.remove('hidden'); resDiv.innerText = "Havana Sommelier đang suy nghĩ...";
 
             try {
                 const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
@@ -478,11 +470,11 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         contents: [{ parts: [{ text: input }] }],
-                        systemInstruction: { parts: [{ text: "Bạn là Sommelier xì gà thượng hạng. Gợi ý 1 loại xì gà phù hợp đồ uống khách nêu. Trả lời ngắn 2 câu sang trọng bằng tiếng Việt." }] }
+                        systemInstruction: { parts: [{ text: "Bạn là Sommelier xì gà thượng hạng. Trả lời ngắn 2 câu lịch thiệp bằng tiếng Việt gợi ý loại xì gà phù hợp sở thích đồ uống khách nêu." }] }
                     })
                 });
                 const data = await response.json();
-                resDiv.innerText = data.candidates[0].content.parts[0].text;
+                resDiv.innerText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Không có phản hồi từ AI.";
             } catch (e) { resDiv.innerText = "Lỗi kết nối AI."; }
             finally { btn.disabled = false; btn.innerText = "Nhận Gợi Ý Ngay"; }
         }
